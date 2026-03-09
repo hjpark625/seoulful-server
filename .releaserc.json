@@ -1,0 +1,15 @@
+{
+  "branches": ["main"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "publishCmd": "docker buildx build --platform linux/amd64 -t ${process.env.DOCKER_IMAGE}:${nextRelease.version} -t ${process.env.DOCKER_IMAGE}:latest --push ."
+      }
+    ],
+    "@semantic-release/github"
+  ]
+}
