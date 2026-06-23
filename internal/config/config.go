@@ -8,8 +8,7 @@ import (
 )
 
 type Config struct {
-	SupabaseURL string
-	SupabaseKey string
+	DatabaseURL string
 	Port        string
 	GinMode     string
 	CORSOrigin  string
@@ -19,15 +18,14 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		SupabaseURL: os.Getenv("SUPABASE_URL"),
-		SupabaseKey: os.Getenv("SUPABASE_KEY"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 		Port:        os.Getenv("PORT"),
 		GinMode:     os.Getenv("GIN_MODE"),
 		CORSOrigin:  os.Getenv("CORS_ORIGIN"),
 	}
 
-	if cfg.SupabaseURL == "" || cfg.SupabaseKey == "" {
-		return nil, fmt.Errorf("SUPABASE_URL and SUPABASE_KEY are required")
+	if cfg.DatabaseURL == "" {
+		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
 	if cfg.Port == "" {

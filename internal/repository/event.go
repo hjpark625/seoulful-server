@@ -1,26 +1,33 @@
 package repository
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	postgrest "github.com/supabase-community/postgrest-go"
-	supabase "github.com/supabase-community/supabase-go"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"seoulful-server-go/internal/model"
 )
 
+const eventColumns = `
+	event_id, category_seq, gu_seq, event_name, period, place, org_name,
+	use_target, ticket_price, inqury_number AS inquiry_number, player, describe, etc_desc,
+	homepage_link, main_img, reg_date, is_public, start_date, end_date,
+	theme, latitude, longitude, is_free, detail_url, geohash, display_time`
+
 type EventRepository struct {
-	client *supabase.Client
+	pool *pgxpool.Pool
 }
 
-func NewEventRepository(client *supabase.Client) *EventRepository {
-	return &EventRepository{client: client}
+func NewEventRepository(pool *pgxpool.Pool) *EventRepository {
+	return &EventRepository{pool: pool}
 }
 
 type EventFilter struct {
-	CategorySeqs []string
+	CategorySeqs []int
 	Search       string
 	GuSeq        string
 	Geohashes    []string
@@ -32,78 +39,133 @@ type EventFilter struct {
 	Limit        int
 }
 
-func (r *EventRepository) FindEvents(filter EventFilter) ([]model.EventRow, int64, error) {
-	query := r.client.From("events").Select("*", "exact", false)
+func (r *EventRepository) FindEvents(ctx context.Context, filter EventFilter) ([]model.EventRow, int64, error) {
+	whereClause, args := buildFilter(filter)
 
-	if len(filter.CategorySeqs) > 0 {
-		query = query.In("category_seq", filter.CategorySeqs)
+	var count int64
+	countQuery := `SELECT COUNT(*) FROM events` + whereClause
+	if err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&count); err != nil {
+		return nil, 0, fmt.Errorf("count events: %w", err)
 	}
-
-	if filter.Search != "" {
-		orFilter := fmt.Sprintf("event_name.ilike.%%%s%%,org_name.ilike.%%%s%%", filter.Search, filter.Search)
-		query = query.Or(orFilter, "")
-	}
-
-	if filter.GuSeq != "" {
-		query = query.Eq("gu_seq", filter.GuSeq)
-	}
-
-	if len(filter.Geohashes) > 0 {
-		parts := make([]string, 0, len(filter.Geohashes))
-		for _, hash := range filter.Geohashes {
-			parts = append(parts, fmt.Sprintf("geohash.like.%s%%", hash))
-		}
-		query = query.Or(strings.Join(parts, ","), "")
-	}
-
-	if filter.WeekendStart != "" && filter.WeekendEnd != "" {
-		query = query.Lte("start_date", filter.WeekendEnd)
-		query = query.Gte("end_date", filter.WeekendStart)
-	}
-
-	if filter.StartDate != "" {
-		query = query.Gte("end_date", filter.StartDate)
-	}
-
-	if filter.EndDate != "" {
-		query = query.Lte("start_date", filter.EndDate)
-	}
-
-	query = query.Order("start_date", &postgrest.OrderOpts{Ascending: false})
-	query = query.Order("event_id", &postgrest.OrderOpts{Ascending: false})
 
 	offset := (filter.Page - 1) * filter.Limit
-	query = query.Range(offset, offset+filter.Limit-1, "")
+	pageArgs := append(args, filter.Limit, offset)
+	query := `SELECT ` + eventColumns + ` FROM events` + whereClause +
+		fmt.Sprintf(" ORDER BY start_date DESC NULLS LAST, event_id DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
 
-	data, count, err := query.Execute()
+	rows, err := r.pool.Query(ctx, query, pageArgs...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("supabase query failed: %w", err)
+		return nil, 0, fmt.Errorf("query events: %w", err)
 	}
+	defer rows.Close()
 
-	var events []model.EventRow
-	if err := json.Unmarshal(data, &events); err != nil {
-		return nil, 0, fmt.Errorf("failed to unmarshal events: %w", err)
+	events := make([]model.EventRow, 0)
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		events = append(events, *event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate events: %w", err)
 	}
 
 	return events, count, nil
 }
 
-func (r *EventRepository) FindEventByID(eventID string) (*model.EventRow, error) {
-	query := r.client.From("events").Select("*", "", false).Eq("event_id", eventID)
-
-	data, _, err := query.Execute()
+func (r *EventRepository) FindEventByID(ctx context.Context, eventID int) (*model.EventRow, error) {
+	query := `SELECT ` + eventColumns + ` FROM events WHERE event_id = $1`
+	event, err := scanEvent(r.pool.QueryRow(ctx, query, eventID))
 	if err != nil {
-		return nil, fmt.Errorf("supabase query failed: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
 	}
 
-	var events []model.EventRow
-	if err := json.Unmarshal(data, &events); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal event: %w", err)
+	return event, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEvent(row rowScanner) (*model.EventRow, error) {
+	var event model.EventRow
+	if err := row.Scan(
+		&event.EventID,
+		&event.CategorySeq,
+		&event.GuSeq,
+		&event.EventName,
+		&event.Period,
+		&event.Place,
+		&event.OrgName,
+		&event.UseTarget,
+		&event.TicketPrice,
+		&event.InquiryNumber,
+		&event.Player,
+		&event.Describe,
+		&event.EtcDesc,
+		&event.HomepageLink,
+		&event.MainImg,
+		&event.RegDate,
+		&event.IsPublic,
+		&event.StartDate,
+		&event.EndDate,
+		&event.Theme,
+		&event.Latitude,
+		&event.Longitude,
+		&event.IsFree,
+		&event.DetailURL,
+		&event.Geohash,
+		&event.DisplayTime,
+	); err != nil {
+		return nil, fmt.Errorf("scan event: %w", err)
 	}
 
-	if len(events) == 0 {
-		return nil, nil
+	return &event, nil
+}
+
+func buildFilter(filter EventFilter) (string, []any) {
+	conditions := make([]string, 0)
+	args := make([]any, 0)
+	addArg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
 	}
 
-	return &events[0], nil
+	if len(filter.CategorySeqs) > 0 {
+		conditions = append(conditions, "category_seq = ANY("+addArg(filter.CategorySeqs)+"::integer[])")
+	}
+	if filter.Search != "" {
+		placeholder := addArg("%" + filter.Search + "%")
+		conditions = append(conditions, "(event_name ILIKE "+placeholder+" OR COALESCE(org_name, '') ILIKE "+placeholder+")")
+	}
+	if filter.GuSeq != "" {
+		conditions = append(conditions, "gu_seq = "+addArg(filter.GuSeq)+"::integer")
+	}
+	if len(filter.Geohashes) > 0 {
+		prefixes := make([]string, 0, len(filter.Geohashes))
+		for _, geohash := range filter.Geohashes {
+			prefixes = append(prefixes, geohash+"%")
+		}
+		conditions = append(conditions, "geohash LIKE ANY("+addArg(prefixes)+"::text[])")
+	}
+	if filter.WeekendStart != "" && filter.WeekendEnd != "" {
+		conditions = append(conditions, "start_date <= "+addArg(filter.WeekendEnd)+"::timestamptz")
+		conditions = append(conditions, "end_date >= "+addArg(filter.WeekendStart)+"::timestamptz")
+	}
+	if filter.StartDate != "" {
+		conditions = append(conditions, "end_date >= "+addArg(filter.StartDate)+"::timestamptz")
+	}
+	if filter.EndDate != "" {
+		conditions = append(conditions, "start_date <= "+addArg(filter.EndDate)+"::timestamptz")
+	}
+
+	if len(conditions) == 0 {
+		return "", args
+	}
+
+	return " WHERE " + strings.Join(conditions, " AND "), args
 }

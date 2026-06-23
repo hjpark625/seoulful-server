@@ -31,7 +31,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		Limit:     c.Query("limit"),
 	}
 
-	result, err := h.service.GetEvents(params)
+	result, err := h.service.GetEvents(c.Request.Context(), params)
 	if err != nil {
 		log.Printf("error fetching events: %v", err)
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "Internal server error"})
@@ -44,7 +44,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 func (h *EventHandler) GetEventByID(c *gin.Context) {
 	id := c.Param("id")
 
-	event, err := h.service.GetEventByID(id)
+	event, err := h.service.GetEventByID(c.Request.Context(), id)
 	if err != nil {
 		log.Printf("error fetching event %s: %v", id, err)
 		c.JSON(http.StatusInternalServerError, model.ErrorResponse{Error: "Internal server error"})

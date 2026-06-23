@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	_ "time/tzdata"
 
 	"regexp"
@@ -33,11 +34,11 @@ type EventQueryParams struct {
 	Limit     string
 }
 
-var categorySeqMap = map[string][]string{
-	"FESTIVAL":    {"9", "10", "11", "12", "13"},
-	"EXHIBITION":  {"8"},
-	"PERFORMANCE": {"2", "3", "4", "5", "6", "7", "14", "15"},
-	"OTHER":       {"1", "16"},
+var categorySeqMap = map[string][]int{
+	"FESTIVAL":    {9, 10, 11, 12, 13},
+	"EXHIBITION":  {8},
+	"PERFORMANCE": {2, 3, 4, 5, 6, 7, 14, 15},
+	"OTHER":       {1, 16},
 }
 
 var seqToCategoryMap = map[int]model.EventCategory{
@@ -183,12 +184,8 @@ func (s *EventService) ToSeoulEvent(row model.EventRow) model.SeoulEvent {
 		Category: mapCategorySeqToCategory(row.CategorySeq),
 	}
 
-	if row.StartDate != nil {
-		event.StartDate = *row.StartDate
-	}
-	if row.EndDate != nil {
-		event.EndDate = *row.EndDate
-	}
+	event.StartDate = formatTimestamp(row.StartDate)
+	event.EndDate = formatTimestamp(row.EndDate)
 
 	event.Description = sanitizeNull(row.Describe)
 
@@ -243,9 +240,9 @@ func (s *EventService) ToSeoulEvents(rows []model.EventRow) []model.SeoulEvent {
 	return events
 }
 
-func (s *EventService) GetEvents(params EventQueryParams) (*model.EventListResponse, error) {
+func (s *EventService) GetEvents(ctx context.Context, params EventQueryParams) (*model.EventListResponse, error) {
 	filter := s.BuildFilter(params)
-	rows, totalCount, err := s.repo.FindEvents(filter)
+	rows, totalCount, err := s.repo.FindEvents(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -258,8 +255,13 @@ func (s *EventService) GetEvents(params EventQueryParams) (*model.EventListRespo
 	}, nil
 }
 
-func (s *EventService) GetEventByID(id string) (*model.SeoulEvent, error) {
-	row, err := s.repo.FindEventByID(id)
+func (s *EventService) GetEventByID(ctx context.Context, id string) (*model.SeoulEvent, error) {
+	eventID, err := strconv.Atoi(id)
+	if err != nil || eventID < 1 {
+		return nil, nil
+	}
+
+	row, err := s.repo.FindEventByID(ctx, eventID)
 	if err != nil {
 		return nil, err
 	}
@@ -269,4 +271,12 @@ func (s *EventService) GetEventByID(id string) (*model.SeoulEvent, error) {
 
 	event := s.ToSeoulEvent(*row)
 	return &event, nil
+}
+
+func formatTimestamp(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+
+	return value.UTC().Format(time.RFC3339)
 }

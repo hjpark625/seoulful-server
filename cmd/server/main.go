@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/gin-gonic/gin"
-	supabase "github.com/supabase-community/supabase-go"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"seoulful-server-go/internal/config"
 	"seoulful-server-go/internal/handler"
@@ -19,12 +20,17 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	client, err := supabase.NewClient(cfg.SupabaseURL, cfg.SupabaseKey, nil)
+	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("failed to initialize supabase client: %v", err)
+		log.Fatalf("failed to initialize PostgreSQL connection pool: %v", err)
+	}
+	defer pool.Close()
+
+	if err := pool.Ping(context.Background()); err != nil {
+		log.Fatalf("failed to connect to PostgreSQL: %v", err)
 	}
 
-	eventRepo := repository.NewEventRepository(client)
+	eventRepo := repository.NewEventRepository(pool)
 	eventService := service.NewEventService(eventRepo)
 	eventHandler := handler.NewEventHandler(eventService)
 
@@ -32,7 +38,7 @@ func main() {
 	router := gin.Default()
 	router.Use(middleware.CORS(cfg.CORSOrigin))
 
-	router.GET("/health", handler.HealthCheck)
+	router.GET("/health", handler.HealthCheck(pool))
 	router.GET("/events", eventHandler.GetEvents)
 	router.GET("/events/:id", eventHandler.GetEventByID)
 
